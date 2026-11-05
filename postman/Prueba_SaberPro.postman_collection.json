@@ -1,0 +1,180 @@
+{
+  "info": {
+    "name": "Prueba Segundo Corte - Banco de Preguntas Saber PRO",
+    "description": "Casos: 201 Created, 400 Bad Request, 202 Accepted y verificación en RabbitMQ. Ejecutar en orden (Collection Runner).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Crear pregunta válida (201 Created)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 201 Created', () => pm.response.to.have.status(201));",
+              "const json = pm.response.json();",
+              "pm.test('La pregunta queda en estado DRAFT', () => pm.expect(json.status).to.eql('DRAFT'));",
+              "pm.test('Se guardaron las 4 opciones', () => pm.expect(json.options.length).to.eql(4));",
+              "pm.test('Tiene id generado', () => pm.expect(json.id).to.be.a('number'));",
+              "pm.collectionVariables.set('questionId', json.id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{question_url}}/questions",
+        "description": "Question Service llama de forma síncrona a Validation Service (POST /validate). Si responde 200, guarda en H2 y responde 201.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"statement\": \"¿Cuál es el resultado de 2 + 2?\",\n  \"options\": [\n    \"3\",\n    \"4\",\n    \"5\",\n    \"6\"\n  ],\n  \"correctKey\": \"B\",\n  \"justification\": \"La suma de 2 + 2 es 4, por lo tanto la opción B es la correcta.\"\n}"
+        }
+      }
+    },
+    {
+      "name": "2. Rechazo por fallo de validación estructural (400 Bad Request)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 400 Bad Request', () => pm.response.to.have.status(400));",
+              "const json = pm.response.json();",
+              "pm.test('Devuelve la lista de errores del Validation Service', () => pm.expect(json.errors.length).to.be.above(0));",
+              "pm.test('Menciona las 4 opciones exactas', () => pm.expect(json.errors.join(' ')).to.include('exactamente 4'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{question_url}}/questions",
+        "description": "Solo 3 opciones y sin justificación: Validation Service responde 400 y Question Service cancela el guardado.",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"statement\": \"¿Cuál es la capital de Colombia?\",\n  \"options\": [\n    \"Bogotá\",\n    \"Medellín\",\n    \"Cali\"\n  ],\n  \"correctKey\": \"A\"\n}"
+        }
+      }
+    },
+    {
+      "name": "3. Envío asíncrono a revisión (202 Accepted)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 202 Accepted', () => pm.response.to.have.status(202));",
+              "const json = pm.response.json();",
+              "pm.test('Trae operationId', () => pm.expect(json.operationId).to.be.a('string').and.not.empty);",
+              "pm.test('Estado PROCESSING', () => pm.expect(json.status).to.eql('PROCESSING'));",
+              "pm.collectionVariables.set('operationId', json.operationId);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{question_url}}/questions/{{questionId}}/submit",
+        "description": "Publica el comando SubmitQuestionForReview en saberpro.direct.exchange (routing key question.submit) y responde de inmediato."
+      }
+    },
+    {
+      "name": "4. Confirmar la cola en RabbitMQ (consola de gestión)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200 OK', () => pm.response.to.have.status(200));",
+              "const json = pm.response.json();",
+              "pm.test('La cola question.submit.queue existe', () => pm.expect(json.name).to.eql('question.submit.queue'));",
+              "pm.test('Lifecycle Service está suscrito (1 consumidor)', () => pm.expect(json.consumers).to.be.at.least(1));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{rabbit_url}}/api/queues/%2F/question.submit.queue",
+        "description": "Equivale a mirar http://localhost:15672 -> Queues -> question.submit.queue. Usuario guest / guest.",
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "username",
+              "value": "guest",
+              "type": "string"
+            },
+            {
+              "key": "password",
+              "value": "guest",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "5 (extra). Verificar estado PENDING_REVIEW en Lifecycle Service",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('Lifecycle consumió el comando: PENDING_REVIEW', () => pm.expect(pm.response.json().state).to.eql('PENDING_REVIEW'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{lifecycle_url}}/lifecycle/questions/{{questionId}}",
+        "description": "Demuestra el consumo en segundo plano con @RabbitListener."
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "question_url",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "lifecycle_url",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "rabbit_url",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "questionId",
+      "value": ""
+    },
+    {
+      "key": "operationId",
+      "value": ""
+    }
+  ]
+}
